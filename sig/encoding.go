@@ -21,6 +21,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 )
 
 func Encode(privateKey *ecdsa.PrivateKey, publicKey *ecdsa.PublicKey) (*string, *string, error) {
@@ -63,4 +64,51 @@ func EncodePublicKey(publicKey *ecdsa.PublicKey) (*string, error) {
 	}))
 
 	return &pemEncoded, nil
+}
+
+func Decode(privateKey string, publicKey string) (*ecdsa.PrivateKey, *ecdsa.PublicKey, error) {
+	decodedPrivateKey, err := DecodePrivateKey(privateKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	decodedPublicKey, err := DecodePublicKey(publicKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return decodedPrivateKey, decodedPublicKey, err
+}
+
+func DecodePrivateKey(pemEncoded string) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(pemEncoded))
+	if block == nil || block.Type != "EC PRIVATE KEY" {
+		return nil, errors.New("failed to decode PEM block containing private key")
+	}
+
+	privateKey, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return privateKey, nil
+}
+
+func DecodePublicKey(pemEncoded string) (*ecdsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemEncoded))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return nil, errors.New("failed to decode PEM block containing public key")
+	}
+
+	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	ecdsaPublicKey, ok := publicKey.(ecdsa.PublicKey)
+	if !ok {
+		return nil, errors.New("failed to parse PKIX block containing ECDSA public key")
+	}
+
+	return &ecdsaPublicKey, nil
 }

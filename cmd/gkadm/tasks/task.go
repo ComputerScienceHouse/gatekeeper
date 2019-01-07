@@ -25,10 +25,36 @@ import (
 	"net/http"
 )
 
+type chanWriter struct {
+	ch chan byte
+}
+
+func newChanWriter() *chanWriter {
+	return &chanWriter{make(chan byte, 1024)}
+}
+
+func (w *chanWriter) Chan() <-chan byte {
+	return w.ch
+}
+
+func (w *chanWriter) Write(p []byte) (int, error) {
+	n := 0
+	for _, b := range p {
+		w.ch <- b
+		n++
+	}
+	return n, nil
+}
+
+func (w *chanWriter) Close() error {
+	close(w.ch)
+	return nil
+}
+
 // Represents interface to which each task type must conform
 type task interface {
 	TaskType() string
-	GetLog() chan string
+	GetOutput() chanWriter
 	Run()
 }
 
@@ -82,11 +108,15 @@ func GetTaskLog(c echo.Context) error {
 	}
 
 	websocket.Handler(func(ws *websocket.Conn) {
-		defer ws.Close()
+		defer func() {
+			// Swallow any errors
+			_ = ws.Close()
+		}()
 
 		c.Logger().Info(fmt.Sprintf("WebSocket connected: %s", c.Request().RequestURI))
 
-		for msg := range task.GetLog() {
+		output := task.GetOutput()
+		for msg := range output.Chan() {
 			err := websocket.Message.Send(ws, msg)
 			if err != nil {
 				c.Logger().Error(err)

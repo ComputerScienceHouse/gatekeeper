@@ -20,12 +20,13 @@ package device
 import (
 	"crypto/ecdsa"
 	"errors"
-	"fmt"
 	"github.com/ComputerScienceHouse/gatekeeper/keys"
 	"github.com/ComputerScienceHouse/gatekeeper/sig"
 	"github.com/fuzxxl/freefare/0.3/freefare"
 	"github.com/fuzxxl/nfc/2.0/nfc"
 	"github.com/google/uuid"
+	"github.com/labstack/gommon/log"
+	"io/ioutil"
 	"math/big"
 	"strings"
 	"time"
@@ -80,17 +81,17 @@ type nfcDevice struct {
 }
 
 type Realm struct {
-	Name       string
-	Slot       uint32
-	UUID       uuid.UUID
-	AuthKey    []byte
-	ReadKey    []byte
-	UpdateKey  []byte
-	PublicKey  *ecdsa.PublicKey
-	PrivateKey *ecdsa.PrivateKey
+	Name          string
+	Slot          uint32
+	AssociationID uuid.UUID
+	AuthKey       []byte
+	ReadKey       []byte
+	UpdateKey     []byte
+	PublicKey     *ecdsa.PublicKey
+	PrivateKey    *ecdsa.PrivateKey
 }
 
-func OpenNFCDevice(log chan string) (*nfcDevice, error) {
+func OpenNFCDevice(log log.Logger) (*nfcDevice, error) {
 	device, err := nfc.Open("")
 	if err != nil {
 		return nil, err
@@ -100,31 +101,47 @@ func OpenNFCDevice(log chan string) (*nfcDevice, error) {
 		return nil, err
 	}
 
-	log <- fmt.Sprintf("NFC reader opened: %s", device.String())
+	log.Infof("NFC reader opened: %s", device.String())
 
 	return &nfcDevice{
 		Device: device,
 	}, nil
 }
 
-func (d *nfcDevice) Close(log chan string) error {
+func NFCHealthz() bool {
+	nfcStatus := true
+
+	nullLog := log.New("")
+	nullLog.SetOutput(ioutil.Discard)
+
+	nfcDevice, err := OpenNFCDevice(*nullLog)
+	if err != nil || nfcDevice == nil {
+		nfcStatus = false
+	} else {
+		_ = nfcDevice.Close(*nullLog)
+	}
+
+	return nfcStatus
+}
+
+func (d *nfcDevice) Close(log log.Logger) error {
 	if err := d.Device.Close(); err != nil {
 		return err
 	}
 
-	log <- "NFC device successfully closed"
+	log.Infof("NFC device successfully closed")
 	return nil
 }
 
-func (d *nfcDevice) Connect(log chan string) (*freefare.DESFireTag, error) {
-	log <- "Waiting for card..."
+func (d *nfcDevice) Connect(log log.Logger) (*freefare.DESFireTag, error) {
+	log.Infof("Waiting for card...")
 
 	for {
 		time.Sleep(targetLoopTimer)
 
 		tags, err := freefare.GetTags(d.Device)
 		if err != nil {
-			log <- fmt.Sprintf("Failed to get tags from device: %s", err)
+			log.Fatalf("Failed to get tags from device: %s", err)
 			return nil, err
 		}
 
@@ -136,22 +153,22 @@ func (d *nfcDevice) Connect(log chan string) (*freefare.DESFireTag, error) {
 		tag := tags[0]
 		target, success := tag.(freefare.DESFireTag)
 		if success != true {
-			log <- "Not a DESFire target, ignoring"
+			log.Warnf("Not a DESFire target, ignoring")
 			continue
 		}
 
 		if err = target.Connect(); err != nil {
 			// Can't connect to the tag
-			log <- fmt.Sprintf("Unable to connect to target, ignoring: %s", err)
+			log.Warnf("Unable to connect to target, ignoring: %s", err)
 			continue
 		}
 
-		log <- fmt.Sprintf("Connected to a %s target with UID %s", target.String(), target.UID())
+		log.Infof("Connected to a %s target with UID %s", target.String(), target.UID())
 		return &target, nil
 	}
 }
 
-func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realms []Realm, log chan string) error {
+func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realms []Realm, log log.Logger) error {
 	// Get the target's UID
 	uid, err := target.CardUID()
 	if err != nil {
@@ -168,8 +185,8 @@ func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realm
 	// Write each realm as an application
 	for _, realm := range realms {
 		appId := freefare.NewDESFireAid(baseAppId + realm.Slot)
-		uuidArr := []byte(realm.UUID.String())
-		mangledUUID := strings.Replace(realm.UUID.String(), "-", "", -1)
+		uuidArr := []byte(realm.AssociationID.String())
+		mangledUUID := strings.Replace(realm.AssociationID.String(), "-", "", -1)
 
 		if unsafe.Sizeof(mangledUUID) != mangledUUIDLength {
 			return errors.New("unexpected size of mangled UUID")
@@ -346,7 +363,7 @@ func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realm
 	return nil
 }
 
-func (d *nfcDevice) Authenticate(target freefare.DESFireTag, realm Realm, log chan string) (*uuid.UUID, error) {
+func (d *nfcDevice) Authenticate(target freefare.DESFireTag, realm Realm, log log.Logger) (*uuid.UUID, error) {
 	appId := freefare.NewDESFireAid(baseAppId + realm.Slot)
 	appReadKey := keys.GenDESFireKey(realm.ReadKey)
 
@@ -424,12 +441,12 @@ func (d *nfcDevice) Authenticate(target freefare.DESFireTag, realm Realm, log ch
 	return &targetUUID, nil
 }
 
-func (d *nfcDevice) Disconnect(target freefare.DESFireTag, log chan string) error {
+func (d *nfcDevice) Disconnect(target freefare.DESFireTag, log log.Logger) error {
 	if err := target.Disconnect(); err != nil {
-		log <- fmt.Sprintf("Unable to disconnect from target (already disconnected?): %s", err)
+		log.Warnf("Unable to disconnect from target (already disconnected?): %s", err)
 		return err
 	}
 
-	log <- fmt.Sprintf("Disconnected from target %s", target.UID())
+	log.Infof("Disconnected from target %s", target.UID())
 	return nil
 }

@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"github.com/ComputerScienceHouse/gatekeeper/cmd/gkadm/tasks"
+	"github.com/ComputerScienceHouse/gatekeeper/device"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 	"github.com/labstack/gommon/log"
@@ -67,11 +68,19 @@ func serve() {
 	  Routes
 	*/
 	e.GET("/", func(c echo.Context) error {
-		return c.HTML(http.StatusOK, "<h2>Gatekeeper Admin API</h2>\n<p>Please visit your instance's admin dashboard to interact with this service.</p>")
+		return c.HTML(http.StatusOK, "<h2>Gatekeeper Admin Helper</h2>\n<p>Please visit your instance's admin dashboard to interact with this application.</p>")
 	})
 
 	e.GET("/healthz", func(c echo.Context) error {
 		return c.String(http.StatusOK, "ok")
+	})
+
+	e.GET("/healthz/nfc", func(c echo.Context) error {
+		if device.NFCHealthz() {
+			return c.String(http.StatusOK, "ok")
+		} else {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 	})
 
 	e.GET("/tasks", tasks.GetTasks)

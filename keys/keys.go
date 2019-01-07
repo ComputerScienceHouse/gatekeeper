@@ -19,6 +19,7 @@ package keys
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"github.com/fuzxxl/freefare/0.3/freefare"
 )
 
@@ -35,4 +36,12 @@ func GenRandomDESFireKey() (*freefare.DESFireKey, error) {
 	}
 
 	return GenDESFireKey(key), nil
+}
+
+func Encode(key []byte) string {
+	return hex.EncodeToString(key)
+}
+
+func Decode(key string) ([]byte, error) {
+	return hex.DecodeString(key)
 }
