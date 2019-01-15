@@ -29,25 +29,9 @@ import (
 	"net/http"
 )
 
-const taskTypeIssue = "issue"
+const taskTypeVerify = "verify"
 
-type issueRequest struct {
-	SystemSecret string              `json:"systemSecret"`
-	Realms       []issueRequestRealm `json:"realms"`
-}
-
-type issueRequestRealm struct {
-	Name          string `json:"name"`
-	Slot          int    `json:"slot"`
-	AssociationId string `json:"associationId"`
-	AuthKey       string `json:"authKey"`
-	ReadKey       string `json:"readKey"`
-	UpdateKey     string `json:"updateKey"`
-	PublicKey     string `json:"publicKey"`
-	PrivateKey    string `json:"privateKey"`
-}
-
-type taskIssue struct {
+type taskVerify struct {
 	ID      uuid.UUID     `json:"id"`
 	Type    string        `json:"type"`
 	Request *issueRequest `json:"-"`
@@ -55,23 +39,23 @@ type taskIssue struct {
 	Logger  log.Logger    `json:"-"`
 }
 
-func (m *taskIssue) TaskType() string {
-	return taskTypeIssue
+func (m *taskVerify) TaskType() string {
+	return taskTypeVerify
 }
 
-func (m *taskIssue) GetOutput() chanWriter {
+func (m *taskVerify) GetOutput() chanWriter {
 	return m.Output
 }
 
-func (m *taskIssue) LogError(err error) {
+func (m *taskVerify) LogError(err error) {
 	m.Logger.Errorf("[ERROR] %s", err)
 	m.Logger.Errorf("Aborting")
 }
 
-func (m *taskIssue) Run() {
-	m.Logger.Info("Parsing issue request...")
+func (m *taskVerify) Run() {
+	m.Logger.Info("Parsing verify request...")
 
-	systemSecret, err := keys.Decode(m.Request.SystemSecret)
+	_, err := keys.Decode(m.Request.SystemSecret)
 	if err != nil {
 		m.LogError(err)
 		return
@@ -147,16 +131,31 @@ func (m *taskIssue) Run() {
 		return
 	}
 
-	m.Logger.Info("Writing tag...")
+	for _, realm := range realms {
+		m.Logger.Infof("Verifying tag for '%s' realm...", realm.Name)
 
-	err = nfcDevice.Issue(*target, systemSecret, realms, m.Logger)
-	if err != nil {
-		m.LogError(err)
-		err = nfcDevice.Close(m.Logger)
+		tagUUID, err := nfcDevice.Authenticate(*target, realm, m.Logger)
 		if err != nil {
-			m.LogError(err)
+			m.LogError(errors.New("unable to authenticate tag"))
+			err = nfcDevice.Close(m.Logger)
+			if err != nil {
+				m.LogError(err)
+			}
+			return
 		}
-		return
+
+		if tagUUID.String() != realm.AssociationID.String() {
+			m.LogError(errors.New(fmt.Sprintf(
+				"invalid UUID read from tag for realm '%s': expected '%s', got '%s'",
+				realm.Name,
+				realm.AssociationID.String(),
+				tagUUID.String())))
+			err = nfcDevice.Close(m.Logger)
+			if err != nil {
+				m.LogError(err)
+			}
+			return
+		}
 	}
 
 	m.Logger.Info("Closing NFC device...")
@@ -164,43 +163,39 @@ func (m *taskIssue) Run() {
 	err = nfcDevice.Close(m.Logger)
 	if err != nil {
 		m.LogError(err)
-		err = nfcDevice.Close(m.Logger)
-		if err != nil {
-			m.LogError(err)
-		}
 		return
 	}
 
 	m.Logger.Info("Success")
 }
 
-func NewTaskIssue(request *issueRequest) (*taskIssue, error) {
+func NewTaskVerify(request *issueRequest) (*taskVerify, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return nil, err
 	}
 
 	output := newChanWriter()
-	logger := log.New(fmt.Sprintf("issue_%s", id))
+	logger := log.New(fmt.Sprintf("verify_%s", id))
 	logger.SetHeader("[${level}]")
 	logger.SetOutput(output)
 
-	return &taskIssue{
+	return &taskVerify{
 		ID:      id,
-		Type:    taskTypeIssue,
+		Type:    taskTypeVerify,
 		Request: request,
 		Output:  *output,
 		Logger:  *logger,
 	}, nil
 }
 
-func CreateIssueTask(c echo.Context) error {
+func CreateVerifyTask(c echo.Context) error {
 	req := new(issueRequest)
 	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	task, err := NewTaskIssue(req)
+	task, err := NewTaskVerify(req)
 	if err != nil {
 		return err
 	}

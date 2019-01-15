@@ -87,6 +87,7 @@ func serve() {
 	e.GET("/tasks/:id", tasks.GetTask)
 	e.GET("/tasks/:id/log", tasks.GetTaskLog)
 	e.POST("/issue", tasks.CreateIssueTask)
+	e.POST("/verify", tasks.CreateVerifyTask)
 
 	// Start the server
 	e.Logger.Fatal(e.Start(":42069"))

@@ -26,24 +26,20 @@ import (
 )
 
 type chanWriter struct {
-	ch chan byte
+	ch chan string
 }
 
 func newChanWriter() *chanWriter {
-	return &chanWriter{make(chan byte, 1024)}
+	return &chanWriter{make(chan string, 50)}
 }
 
-func (w *chanWriter) Chan() <-chan byte {
+func (w *chanWriter) Chan() <-chan string {
 	return w.ch
 }
 
 func (w *chanWriter) Write(p []byte) (int, error) {
-	n := 0
-	for _, b := range p {
-		w.ch <- b
-		n++
-	}
-	return n, nil
+	w.ch <- string(p)
+	return len(p), nil
 }
 
 func (w *chanWriter) Close() error {
@@ -109,8 +105,10 @@ func GetTaskLog(c echo.Context) error {
 
 	websocket.Handler(func(ws *websocket.Conn) {
 		defer func() {
-			// Swallow any errors
-			_ = ws.Close()
+			err = ws.Close()
+			if err != nil {
+				c.Logger().Error(err)
+			}
 		}()
 
 		c.Logger().Info(fmt.Sprintf("WebSocket connected: %s", c.Request().RequestURI))

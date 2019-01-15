@@ -105,10 +105,10 @@ func DecodePublicKey(pemEncoded string) (*ecdsa.PublicKey, error) {
 		return nil, err
 	}
 
-	ecdsaPublicKey, ok := publicKey.(ecdsa.PublicKey)
-	if !ok {
-		return nil, errors.New("failed to parse PKIX block containing ECDSA public key")
+	switch pub := publicKey.(type) {
+	case *ecdsa.PublicKey:
+		return pub, nil
+	default:
+		return nil, errors.New("unknown or unsupported public key format")
 	}
-
-	return &ecdsaPublicKey, nil
 }

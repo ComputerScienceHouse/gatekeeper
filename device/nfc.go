@@ -30,7 +30,6 @@ import (
 	"math/big"
 	"strings"
 	"time"
-	"unsafe"
 )
 
 // The polling interval for reading a target
@@ -41,12 +40,14 @@ const targetLoopTimer = 50 * time.Millisecond
 const baseAppId uint32 = 0xff77f0
 
 // masterAppId represents the master AID, used for PICC master key derivation
-const masterAppId uint32 = 0x0
+const masterAppId uint32 = 0
 
-// The default master/application key; for uninitialized cards and newly created applications, this is nil/all zeros
+// The default master/application keys; for uninitialized cards and newly created applications, this is all zeros
 var (
-	defaultKey        [16]byte
-	defaultDESFireKey = freefare.NewDESFireAESKey(defaultKey, 0)
+	defaultDESKey        = [8]byte{0x0}
+	defaultAESKey        = [16]byte{0x0}
+	defaultDESFireDESKey = freefare.NewDESFireDESKey(defaultDESKey)
+	defaultDESFireAESKey = freefare.NewDESFireAESKey(defaultAESKey, 0)
 )
 
 // MiFare application settings
@@ -57,11 +58,16 @@ const (
 	finalPICCSettings          byte = 0x08
 )
 
-// MiFare file settings
-const (
-	initialUUIDFileSettings       uint16 = 0x0000
-	finalUUIDFileSettings         uint16 = 0x1FFF
-	finalAuthenticityFileSettings uint16 = 0x2F33
+// File ACLs
+var (
+	// Read: Key 0, Write: Key 0, Read & Write: Key 0, Change Access Rights: Key 0
+	initialFileSettings = freefare.MakeDESFireAccessRights(0x0, 0x0, 0x0, 0x0)
+
+	// Read: Key 1, Write: Never, Read & Write: Never, Change Access Rights: Never
+	finalUUIDFileSettings = freefare.MakeDESFireAccessRights(0x1, 0xF, 0xF, 0xF)
+
+	// Read: Key 2, Write: Never, Read & Write: Never, Change Access Rights: Key 3
+	finalAuthenticityFileSettings = freefare.MakeDESFireAccessRights(0x2, 0xF, 0x3, 0x3)
 )
 
 // UUID file parameters
@@ -71,8 +77,8 @@ const (
 
 // Authenticity file parameters
 const (
-	authenticityRLength  = 32
-	authenticitySLength  = 32
+	authenticityRLength  = 48
+	authenticitySLength  = 48
 	authenticityFileSize = authenticityRLength + authenticitySLength
 )
 
@@ -141,7 +147,7 @@ func (d *nfcDevice) Connect(log log.Logger) (*freefare.DESFireTag, error) {
 
 		tags, err := freefare.GetTags(d.Device)
 		if err != nil {
-			log.Fatalf("Failed to get tags from device: %s", err)
+			log.Errorf("Failed to get tags from device: %s", err)
 			return nil, err
 		}
 
@@ -163,6 +169,10 @@ func (d *nfcDevice) Connect(log log.Logger) (*freefare.DESFireTag, error) {
 			continue
 		}
 
+		// Set the communication modes
+		target.WriteSettings = freefare.Enciphered
+		target.ReadSettings = freefare.Enciphered
+
 		log.Infof("Connected to a %s target with UID %s", target.String(), target.UID())
 		return &target, nil
 	}
@@ -170,16 +180,14 @@ func (d *nfcDevice) Connect(log log.Logger) (*freefare.DESFireTag, error) {
 
 func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realms []Realm, log log.Logger) error {
 	// Get the target's UID
-	uid, err := target.CardUID()
-	if err != nil {
-		return nil
-	}
+	uid := target.UID()
 
 	// Derive PICC master key
+	log.Infof("Deriving PICC master key...")
 	mAppId := freefare.NewDESFireAid(masterAppId)
-	piccMasterKey, err := keys.DeriveDESFireKey(systemSecret, mAppId, 0, []byte(uid))
+	_, err := keys.DeriveDESFireKey(systemSecret, mAppId, 0, []byte(uid))
 	if err != nil {
-		return nil
+		return err
 	}
 
 	// Write each realm as an application
@@ -188,14 +196,16 @@ func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realm
 		uuidArr := []byte(realm.AssociationID.String())
 		mangledUUID := strings.Replace(realm.AssociationID.String(), "-", "", -1)
 
-		if unsafe.Sizeof(mangledUUID) != mangledUUIDLength {
+		if len(mangledUUID) != mangledUUIDLength {
 			return errors.New("unexpected size of mangled UUID")
 		}
+
+		log.Infof("Deriving application keys for '%s' realm...", realm.Name)
 
 		// Derive app master key
 		appMasterKey, err := keys.DeriveDESFireKey(systemSecret, appId, 0, []byte(uid))
 		if err != nil {
-			return nil
+			return err
 		}
 
 		// Derive app transport keys
@@ -210,6 +220,8 @@ func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realm
 			return err
 		}
 
+		log.Infof("Creating authenticity data...")
+
 		// Sign the UUID and create the authenticity data
 		rData, sData, err := sig.Sign(realm.PrivateKey, uuidArr)
 		if err != nil {
@@ -219,79 +231,83 @@ func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realm
 		rDataBytes := rData.Bytes()
 		sDataBytes := sData.Bytes()
 
-		if unsafe.Sizeof(rDataBytes) != authenticityRLength {
+		if len(rDataBytes) != authenticityRLength {
 			return errors.New("unexpected size of authenticity data (R value)")
 		}
 
-		if unsafe.Sizeof(sDataBytes) != authenticitySLength {
+		if len(sDataBytes) != authenticitySLength {
 			return errors.New("unexpected size of authenticity data (S value)")
 		}
 
 		// Ensure we're on the master application
+		log.Infof("Switching to the master application...")
 		if err = target.SelectApplication(mAppId); err != nil {
-			return nil
+			return err
 		}
 
 		// Authenticate to the target
-		if err = target.Authenticate(0, *defaultDESFireKey); err != nil {
-			return nil
+		log.Infof("Authenticating to tag...")
+		if err = target.Authenticate(0, *defaultDESFireDESKey); err != nil {
+			return err
 		}
 
 		// Create the application
+		log.Infof("Creating application in slot %d...", realm.Slot)
 		if err = target.CreateApplication(appId, initialApplicationSettings, 4|freefare.CryptoAES); err != nil {
-			return nil
+			return err
 		}
 
 		// Select the newly created application
+		log.Infof("Selecting application...")
 		if err = target.SelectApplication(appId); err != nil {
-			return nil
+			return err
 		}
 
 		// Authenticate to the application
-		if err = target.Authenticate(0, *defaultDESFireKey); err != nil {
-			return nil
+		log.Infof("Authenticating to application...")
+		if err = target.Authenticate(0, *defaultDESFireAESKey); err != nil {
+			return err
 		}
 
 		// Change the application transport keys
-		if err = target.ChangeKey(1, *appReadKey, *defaultDESFireKey); err != nil {
-			return nil
+		log.Infof("Changing application transport keys...")
+		if err = target.ChangeKey(1, *appReadKey, *defaultDESFireAESKey); err != nil {
+			return err
 		}
 
-		if err = target.ChangeKey(2, *appAuthKey, *defaultDESFireKey); err != nil {
-			return nil
+		if err = target.ChangeKey(2, *appAuthKey, *defaultDESFireAESKey); err != nil {
+			return err
 		}
 
-		if err = target.ChangeKey(3, *appUpdateKey, *defaultDESFireKey); err != nil {
-			return nil
+		if err = target.ChangeKey(3, *appUpdateKey, *defaultDESFireAESKey); err != nil {
+			return err
 		}
 
 		// Create the UUID data file
-		if err = target.CreateDataFile(1, freefare.Plain, initialUUIDFileSettings, mangledUUIDLength, false); err != nil {
-			return nil
+		log.Infof("Writing UUID data file...")
+		if err = target.CreateDataFile(1, freefare.Enciphered, initialFileSettings, mangledUUIDLength, false); err != nil {
+			return err
 		}
 
 		dataLen, err := target.WriteData(1, 0, []byte(mangledUUID))
 		if err != nil {
-			return nil
+			return err
 		}
 
 		if dataLen != mangledUUIDLength {
 			return errors.New("failed to write UUID to target")
 		}
 
-		if err = target.ChangeFileSettings(1, freefare.Enciphered, finalUUIDFileSettings); err != nil {
-			return nil
-		}
-
 		// Create the authenticity file
-		if err = target.CreateDataFile(2, freefare.Enciphered, finalAuthenticityFileSettings, authenticityFileSize, false); err != nil {
-			return nil
+		log.Infof("Writing authenticity file...")
+		if err = target.CreateDataFile(2, freefare.Enciphered, initialFileSettings, authenticityFileSize, false); err != nil {
+			return err
 		}
 
 		// Write the R value to the authenticity file
 		dataLen, err = target.WriteData(2, 0, rDataBytes)
 		if err != nil {
-			return nil
+			return err
 		}
 
 		if dataLen != authenticityRLength {
@@ -301,63 +317,81 @@ func (d *nfcDevice) Issue(target freefare.DESFireTag, systemSecret []byte, realm
 		// Append the S value to the authenticity file
 		dataLen, err = target.WriteData(2, authenticityRLength, sDataBytes)
 		if err != nil {
-			return nil
+			return err
 		}
 
 		if dataLen != authenticitySLength {
 			return errors.New("failed to write authenticity file (S value) to target")
 		}
 
+		log.Infof("Applying file ACLs...")
+		if err = target.ChangeFileSettings(1, freefare.Enciphered, finalUUIDFileSettings); err != nil {
+			return err
+		}
+
+		if err = target.ChangeFileSettings(2, freefare.Enciphered, finalAuthenticityFileSettings); err != nil {
+			return err
+		}
+
 		// Change the application master key
-		if err = target.ChangeKey(0, *appMasterKey, *defaultDESFireKey); err != nil {
-			return nil
+		log.Infof("Changing application master key...")
+		if err = target.ChangeKey(0, *appMasterKey, *defaultDESFireAESKey); err != nil {
+			return err
 		}
 
 		// Re-authenticate to the application
 		if err = target.Authenticate(0, *appMasterKey); err != nil {
-			return nil
+			return err
 		}
 
 		// Change the application key settings
+		log.Infof("Finalizing application settings...")
 		if err = target.ChangeKeySettings(finalApplicationSettings); err != nil {
-			return nil
+			return err
 		}
 	}
 
 	// Switch back to the master application
+	log.Infof("Switching to the master application...")
 	if err = target.SelectApplication(mAppId); err != nil {
-		return nil
+		return err
 	}
 
 	// Authenticate to the target
-	if err = target.Authenticate(0, *defaultDESFireKey); err != nil {
-		return nil
+	log.Infof("Authenticating to tag...")
+	if err = target.Authenticate(0, *defaultDESFireDESKey); err != nil {
+		return err
 	}
 
 	// Change the key settings to allow us to change the PICC master key
 	if err = target.ChangeKeySettings(initialPICCSettings); err != nil {
-		return nil
+		return err
 	}
+
+	// TODO: Must return and save real tag UID or will not be able to re-derive PICC master key
 
 	// Change the PICC master key
-	if err = target.ChangeKey(0, *piccMasterKey, *defaultDESFireKey); err != nil {
-		return nil
-	}
+	//log.Infof("Changing PICC master key...")
+	//if err = target.ChangeKey(0, *piccMasterKey, *defaultDESFireDESKey); err != nil {
+	//	return err
+	//}
 
 	// Re-authenticate to the target
-	if err = target.Authenticate(0, *piccMasterKey); err != nil {
-		return nil
-	}
+	//if err = target.Authenticate(0, *piccMasterKey); err != nil {
+	//	return err
+	//}
 
 	// Set the final key settings
-	if err = target.ChangeKeySettings(finalPICCSettings); err != nil {
-		return nil
-	}
+	//log.Infof("Finalizing PICC settings...")
+	//if err = target.ChangeKeySettings(finalPICCSettings); err != nil {
+	//	return err
+	//}
 
 	// Enable random UID
-	if err = target.SetConfiguration(false, true); err != nil {
-		return nil
-	}
+	//log.Infof("Enabling random PICC UID...")
+	//if err = target.SetConfiguration(false, true); err != nil {
+	//	return err
+	//}
 
 	// Successfully issued card
 	return nil
@@ -423,7 +457,7 @@ func (d *nfcDevice) Authenticate(target freefare.DESFireTag, realm Realm, log lo
 		return nil, err
 	}
 
-	if dataLen != authenticitySLength {
+	if dataLen < authenticitySLength {
 		return nil, errors.New("failed to read authenticity data (S value) from target")
 	}
 
