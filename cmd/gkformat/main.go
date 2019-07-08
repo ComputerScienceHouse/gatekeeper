@@ -19,7 +19,18 @@ package main
 
 import (
 	"github.com/ComputerScienceHouse/gatekeeper/device"
+	"github.com/fuzxxl/freefare/0.3/freefare"
 	"github.com/labstack/gommon/log"
+)
+
+// baseAppId represents the first AID within a MiFare Classic mapped AID
+// (0xF....?) in the middle (0x7F) of an unassigned function cluster (0xF7)
+const baseAppId uint32 = 0xff77f0
+
+// The default master/application key; for uninitialized cards and newly created applications, this is all zeros
+var (
+	defaultDESKey        = [8]byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0}
+	defaultDESFireDESKey = freefare.NewDESFireDESKey(defaultDESKey)
 )
 
 func main() {
@@ -31,12 +42,22 @@ func main() {
 		logger.Fatalf("unable to connect to NFC device")
 	}
 
-	for {
-		target, err := nfcDevice.Connect(*logger)
-		if err != nil {
-			logger.Fatalf("unable to connect to target")
-		}
-
-
+	target, err := nfcDevice.Connect(*logger)
+	if err != nil {
+		logger.Fatalf("unable to connect to target")
 	}
+
+	// Authenticate to the target
+	logger.Infof("Authenticating to tag...")
+	if err = target.Target.Authenticate(0, *defaultDESFireDESKey); err != nil {
+		logger.Fatalf("unable to authenticate to target")
+	}
+
+	// Format tag
+	logger.Infof("Formatting tag...")
+	if err = target.Target.FormatPICC(); err != nil {
+		logger.Fatalf("unable to format tag")
+	}
+
+	logger.Infof("Success")
 }

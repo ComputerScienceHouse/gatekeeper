@@ -18,6 +18,8 @@
 package tasks
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/ComputerScienceHouse/gatekeeper/device"
@@ -34,6 +36,10 @@ const taskTypeIssue = "issue"
 type issueRequest struct {
 	SystemSecret string              `json:"systemSecret"`
 	Realms       []issueRequestRealm `json:"realms"`
+}
+
+type issueResponse struct {
+	UID string `json:"uid"`
 }
 
 type issueRequestRealm struct {
@@ -137,7 +143,7 @@ func (m *taskIssue) Run() {
 		return
 	}
 
-	target, err := nfcDevice.Connect(m.Logger)
+	tag, err := nfcDevice.Connect(m.Logger)
 	if err != nil {
 		m.LogError(err)
 		err = nfcDevice.Close(m.Logger)
@@ -149,7 +155,7 @@ func (m *taskIssue) Run() {
 
 	m.Logger.Info("Writing tag...")
 
-	err = nfcDevice.Issue(*target, systemSecret, realms, m.Logger)
+	err = tag.Issue(systemSecret, realms, m.Logger)
 	if err != nil {
 		m.LogError(err)
 		err = nfcDevice.Close(m.Logger)
@@ -171,7 +177,19 @@ func (m *taskIssue) Run() {
 		return
 	}
 
-	m.Logger.Info("Success")
+	// Send tag info back to the client
+	resp := issueResponse{
+		UID: hex.EncodeToString(tag.UID),
+	}
+
+	jsonResp, err := json.Marshal(resp)
+	if err != nil {
+		m.LogError(errors.New("failed to marshal JSON response"))
+		return
+	}
+
+	// Success
+	m.Output.ch <- string(jsonResp)
 }
 
 func NewTaskIssue(request *issueRequest) (*taskIssue, error) {

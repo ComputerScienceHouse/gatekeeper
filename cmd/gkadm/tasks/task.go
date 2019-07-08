@@ -18,7 +18,6 @@
 package tasks
 
 import (
-	"fmt"
 	"github.com/google/uuid"
 	"github.com/labstack/echo"
 	"golang.org/x/net/websocket"
@@ -111,7 +110,7 @@ func GetTaskLog(c echo.Context) error {
 			}
 		}()
 
-		c.Logger().Info(fmt.Sprintf("WebSocket connected: %s", c.Request().RequestURI))
+		c.Logger().Printf("WS %s (101)", c.Request().RequestURI)
 
 		output := task.GetOutput()
 		for msg := range output.Chan() {

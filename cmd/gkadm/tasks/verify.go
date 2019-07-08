@@ -18,6 +18,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/ComputerScienceHouse/gatekeeper/device"
@@ -134,22 +135,10 @@ func (m *taskVerify) Run() {
 	for _, realm := range realms {
 		m.Logger.Infof("Verifying tag for '%s' realm...", realm.Name)
 
-		tagUUID, err := nfcDevice.Authenticate(*target, realm, m.Logger)
+		err := target.Authenticate(realm, m.Logger)
+		err = target.Authenticate(realm, m.Logger)
 		if err != nil {
 			m.LogError(errors.New("unable to authenticate tag"))
-			err = nfcDevice.Close(m.Logger)
-			if err != nil {
-				m.LogError(err)
-			}
-			return
-		}
-
-		if tagUUID.String() != realm.AssociationID.String() {
-			m.LogError(errors.New(fmt.Sprintf(
-				"invalid UUID read from tag for realm '%s': expected '%s', got '%s'",
-				realm.Name,
-				realm.AssociationID.String(),
-				tagUUID.String())))
 			err = nfcDevice.Close(m.Logger)
 			if err != nil {
 				m.LogError(err)
@@ -166,7 +155,14 @@ func (m *taskVerify) Run() {
 		return
 	}
 
-	m.Logger.Info("Success")
+	jsonResp, err := json.Marshal(map[string]bool{"success": true})
+	if err != nil {
+		m.LogError(errors.New("failed to marshal JSON response"))
+		return
+	}
+
+	// Success
+	m.Output.ch <- string(jsonResp)
 }
 
 func NewTaskVerify(request *issueRequest) (*taskVerify, error) {
